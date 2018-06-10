@@ -9,6 +9,10 @@ from matplotlib import pyplot as plt
 from torchvision.models import resnet18
 from sklearn.metrics import confusion_matrix
 import pickle
+import numpy as np
+
+classes = ('plane', 'car', 'bird', 'cat',
+           'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 
 def split_train(train_set, train_part=0.8, batch_size=1, num_workers=0):
@@ -36,11 +40,11 @@ def split_train(train_set, train_part=0.8, batch_size=1, num_workers=0):
     dev_indices = [i for i in indices if i not in train_indices]
     # train_indices, dev_indices = indices[:train_size], indices[train_size:]
     train_sampler, dev_sampler = SubsetRandomSampler(train_indices), SubsetRandomSampler(dev_indices)
-    return DataLoader(train_set, batch_size=batch_size, sampler=train_sampler, num_workers=num_workers),\
+    return DataLoader(train_set, batch_size=batch_size, sampler=train_sampler, num_workers=num_workers), \
            DataLoader(train_set, batch_size=batch_size, sampler=dev_sampler, num_workers=num_workers)
 
 
-def loss_and_accuracy_on(net, criterion, dev_loader, return_results=False):
+def loss_and_accuracy_on(net, criterion, dev_loader, return_results=False, device=None):
     """
     Predicts and computes average loss per example and accuracy
     :param net: Neural Net object
@@ -55,6 +59,10 @@ def loss_and_accuracy_on(net, criterion, dev_loader, return_results=False):
 
     net.eval()  # evaluation mode (for dropout)
     for x, y in dev_loader:
+
+        if device is not None:
+            x, y = x.to(device), y.to(device)
+
         out = net.forward(x)
         total_loss += criterion(out, y).item()
         pred = torch.argmax(out, dim=1)
@@ -67,7 +75,7 @@ def loss_and_accuracy_on(net, criterion, dev_loader, return_results=False):
     return total_loss / len(dev_loader.sampler), good / len(dev_loader.sampler)
 
 
-def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10):
+def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10, device=None):
     """
     Trains on train data and computes avg. loss and accuracy for train and dev each epoch and prints them
     :param net: Neural Net object
@@ -88,6 +96,10 @@ def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10):
         start = time()
         net.train()  # training mode
         for j, (x, y) in enumerate(train_loader):
+
+            if device is not None:
+                x, y = x.to(device), y.to(device)
+
             optimizer.zero_grad()
             out = net.forward(x)
             loss = criterion(out, y)
@@ -99,16 +111,16 @@ def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10):
             correct = (torch.argmax(out, dim=1) == y).sum().item()
             good += correct
 
-            if j % 5 == 4:
-                print "{} / {}".format(j, len(train_loader))
+        #             if j % 5 == 4:
+        #                 print "{} / {}".format(j, len(train_loader))
 
-        dev_loss, dev_acc = loss_and_accuracy_on(net, criterion, dev_loader)
+        dev_loss, dev_acc = loss_and_accuracy_on(net, criterion, dev_loader, device=device)
         size = len(train_loader.sampler)
         train_loss = total_loss / size
 
         print "| {:^5} | {:010f} | {:8.4f}% | {:7f} | {:6.3f}% | {:08f}s |".format(
             i, train_loss, good / size * 100.0, dev_loss,
-               dev_acc * 100.0, time() - start)
+                           dev_acc * 100.0, time() - start)
 
         all_train_loss.append(train_loss)
         all_dev_loss.append(dev_loss)
@@ -130,7 +142,7 @@ def write_test_pred(net, prefix=""):
 def run_my_cnn(use_batch_norm=False):
     # parameters
     lr = 0.001
-    epochs = 15
+    epochs = 5
     batch = 64
     workers = 2
 
@@ -148,7 +160,7 @@ def run_my_cnn(use_batch_norm=False):
             super(ViewModule, self).__init__()
 
         def forward(self, x):
-            features = reduce(lambda x, y: x*y, x.shape[1:])
+            features = reduce(lambda x, y: x * y, x.shape[1:])
             return x.view(-1, features)
 
     modules = [nn.Conv2d(3, 6, 5, stride=1), nn.ReLU(), nn.MaxPool2d(2),
@@ -164,24 +176,34 @@ def run_my_cnn(use_batch_norm=False):
         modules.insert(10, nn.BatchNorm1d(120))
         modules.insert(14, nn.BatchNorm1d(84))
 
-
     net = nn.Sequential(*modules)
+
+    # cuda
+    device = None
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        net.to(device)
+
     criterion = nn.NLLLoss(size_average=False)
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
-    train_loss, dev_loss = train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=epochs)
+    train_loss, dev_loss = train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=epochs, device=device)
 
     # test
-    test_loss, test_acc, test_pred = loss_and_accuracy_on(net, criterion, test_loader, return_results=True)
+    test_loss, test_acc, test_pred = loss_and_accuracy_on(net, criterion, test_loader, return_results=True,
+                                                          device=device)
     print "\nLoss on test is {}, and accuracy is {}%".format(test_loss, test_acc * 100)
-    print confusion_matrix(test_set.test_labels, test_pred, labels=range(10))
+    cm = confusion_matrix(test_set.test_labels, test_pred, labels=range(10))
 
     # write to test.pred or a verion of it
     # write_test_pred(net, "my_")
-    with open("transfer_test.pred") as f:
-        f.writelines(map(lambda y: str(int(y))+"\n", test_pred))
+    with open("my_test.pred", "w") as f:
+        f.writelines(map(lambda y: str(int(y)) + "\n", test_pred))
 
+    plt.figure()
     plot_graph(dev_loss, train_loss)
+
+    plot_confusion_matrix(cm, "CNN Confusion Matrix")
 
 
 def plot_graph(dev_loss, train_loss):
@@ -193,13 +215,14 @@ def plot_graph(dev_loss, train_loss):
     plt.ylabel("Average Loss per Example")
     plt.legend()
     plt.show()
+    plt.figure().savefig("fig.png")
 
 
 def run_transfer():
     # parameters
-    lr = 0.01
-    epochs = 1
-    batch = 500
+    lr = 0.001
+    epochs = 10
+    batch = 10
     workers = 2
 
     # load data
@@ -216,23 +239,54 @@ def run_transfer():
         p.require_grads = False
     net.fc = nn.Linear(net.fc.in_features, 10)  # replace last linear layer
 
-    criterion = nn.CrossEntropyLoss(size_average=False)
-    optimizer = torch.optim.SGD(net.fc.parameters(), lr)
+    # cuda
+    device = None
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        net.to(device)
 
-    train_loss, dev_loss = train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=epochs)
+    criterion = nn.CrossEntropyLoss(size_average=False)
+    optimizer = torch.optim.Adam(net.fc.parameters(), lr)
+
+    train_loss, dev_loss = train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=epochs, device=device)
 
     # test
-    test_loss, test_acc, test_pred = loss_and_accuracy_on(net, criterion, test_loader, return_results=True)
+    test_loss, test_acc, test_pred = loss_and_accuracy_on(net, criterion, test_loader, return_results=True,
+                                                          device=device)
     print "\nLoss on test is {}, and accuracy is {}%".format(test_loss, test_acc * 100)
     print confusion_matrix(test_set.test_labels, test_pred, labels=range(10))
 
     # write to test.pred or a verion of it
     # write_test_pred(net, "transfer_")
-    with open("transfer_test.pred") as f:
-        f.writelines(map(lambda y: str(int(y))+"\n", test_pred))
+    with open("transfer_test.pred", "w") as f:
+        f.writelines(map(lambda y: str(int(y)) + "\n", test_pred))
 
     plot_graph(dev_loss, train_loss)
 
+
+def plot_confusion_matrix(cm, title):
+    plt.figure()
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+
+    fmt = 'd'
+    thresh = cm.max() / 2.
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            plt.text(j, i, format(cm[i, j], fmt),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.show()
+
+
 if __name__ == '__main__':
-    # run_my_cnn(use_batch_norm=True)
-    run_transfer()
+    run_my_cnn(use_batch_norm=True)
+#     run_transfer()
