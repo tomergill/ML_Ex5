@@ -215,7 +215,7 @@ def plot_graph(dev_loss, train_loss):
     plt.ylabel("Average Loss per Example")
     plt.legend()
     plt.show()
-    plt.figure().savefig("fig.png")
+    plt.savefig("fig.png")
 
 
 def run_transfer():
@@ -285,6 +285,7 @@ def plot_confusion_matrix(cm, title):
     plt.ylabel('True label')
     plt.xlabel('Predicted label')
     plt.show()
+    plt.savefig("cm.png")
 
 
 if __name__ == '__main__':
