@@ -8,7 +8,6 @@ from time import time
 from matplotlib import pyplot as plt
 from torchvision.models import resnet18
 from sklearn.metrics import confusion_matrix
-import pickle
 import numpy as np
 
 classes = ('plane', 'car', 'bird', 'cat',
@@ -51,6 +50,7 @@ def loss_and_accuracy_on(net, criterion, dev_loader, return_results=False, devic
     :param criterion: Loss function module
     :param dev_loader: Data loader to predict on
     :param return_results: If true returns the predictions as a list
+    :param device: If net should run on device other than CPU, then device is set. Otherwise None.
     :return: avg. loss, accuracy [, results]
     """
     total_loss = good = 0.0
@@ -84,6 +84,7 @@ def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10, dev
     :param train_loader: Data loader for train set
     :param dev_loader: Data loader for validation set
     :param epochs: Number of epochs to train net on
+    :param device: If net should run on device other than CPU, then device is set. Otherwise None.
     :return: list of avg. train loss at each epoch, list of avg. validation loss at each epoch
     """
     print "+-------+------------+-----------+----------+---------+------------+"
@@ -119,8 +120,7 @@ def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10, dev
         train_loss = total_loss / size
 
         print "| {:^5} | {:010f} | {:8.4f}% | {:7f} | {:6.3f}% | {:08f}s |".format(
-            i, train_loss, good / size * 100.0, dev_loss,
-                           dev_acc * 100.0, time() - start)
+            i, train_loss, good / size * 100.0, dev_loss, dev_acc * 100.0, time() - start)
 
         all_train_loss.append(train_loss)
         all_dev_loss.append(dev_loss)
@@ -128,23 +128,20 @@ def train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=10, dev
     return all_train_loss, all_dev_loss
 
 
-def write_test_pred(net, prefix=""):
-    with open(prefix + "test.pred", "w") as f:
-        with open('test.pickle') as tp:
-            test = pickle.load(tp)
-        for data in test:
-            image = torch.Tensor(data)
-            output = net(image)
-            pred = torch.argmax(output)
-            f.write(str(pred) + "\n")
-
-
-def run_my_cnn(use_batch_norm=False):
+def run_my_cnn(use_batch_norm=False, use_dropout=False):
+    """
+    Trains my CNN on CIFAR10, produces a loss graph and a confusion matrix
+    :param use_batch_norm: If True uses batches normalization layers after every convolution layer or linear layer
+    :param use_dropout: If True uses dropout layers after every pool layer or after activation functions in the fully
+        connected part
+    :return: None
+    """
     # parameters
-    lr = 0.001
-    epochs = 5
+    lr = 0.01
+    epochs = 50
     batch = 64
     workers = 2
+    do_prob = 0.05
 
     # load data
     transform = transforms.Compose([transforms.ToTensor(),
@@ -175,6 +172,16 @@ def run_my_cnn(use_batch_norm=False):
         modules.insert(5, nn.BatchNorm2d(16))
         modules.insert(10, nn.BatchNorm1d(120))
         modules.insert(14, nn.BatchNorm1d(84))
+        if use_dropout:
+            modules.insert(4, nn.Dropout2d(do_prob))
+            modules.insert(9, nn.Dropout2d(do_prob))
+            modules.insert(13, nn.Dropout(do_prob))
+            modules.insert(16, nn.Dropout(do_prob))
+    elif use_dropout:
+        modules.insert(3, nn.Dropout2d(do_prob))
+        modules.insert(7, nn.Dropout2d(do_prob))
+        modules.insert(11, nn.Dropout(do_prob))
+        modules.insert(14, nn.Dropout(do_prob))
 
     net = nn.Sequential(*modules)
 
@@ -185,7 +192,7 @@ def run_my_cnn(use_batch_norm=False):
         net.to(device)
 
     criterion = nn.NLLLoss(size_average=False)
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr)
 
     train_loss, dev_loss = train_on(net, criterion, optimizer, train_loader, dev_loader, epochs=epochs, device=device)
 
@@ -200,14 +207,21 @@ def run_my_cnn(use_batch_norm=False):
     with open("my_test.pred", "w") as f:
         f.writelines(map(lambda y: str(int(y)) + "\n", test_pred))
 
-    plt.figure()
     plot_graph(dev_loss, train_loss)
 
-    plot_confusion_matrix(cm, "CNN Confusion Matrix")
+    #     plot_confusion_matrix(cm, "CNN Confusion Matrix")
+    print "\n Conf Matrix"
+    print np.array(cm)
 
 
 def plot_graph(dev_loss, train_loss):
-    plt.close()
+    """
+    Plots the average batch loss per epoch graph for train and validation sets
+    :param dev_loss: List containing the average batch loss each epoch for validation set
+    :param train_loss: Likewise, but of the training set
+    :return: None
+    """
+    f = plt.figure()
     plt.plot(range(len(train_loss)), train_loss, "r", label="Training Set")
     plt.plot(range(len(dev_loss)), dev_loss, "b--", label="Validation Set")
     # plt.axis([0, 9, 0.0, 0.7])
@@ -215,15 +229,20 @@ def plot_graph(dev_loss, train_loss):
     plt.ylabel("Average Loss per Example")
     plt.legend()
     plt.show()
-    plt.savefig("fig.png")
+    f.savefig("fig.png")
 
 
 def run_transfer():
+    """
+    Runs ResNet18 as a feature extractor and trains a linear layer to recieve the ResNet18's output and classify
+        CIFAR10 dataset
+    :return: None
+    """
     # parameters
     lr = 0.001
-    epochs = 10
-    batch = 10
-    workers = 2
+    epochs = 1
+    batch = 64
+    workers = 1
 
     # load data
     transform = transforms.Compose([transforms.Resize((224, 224)),
@@ -254,7 +273,7 @@ def run_transfer():
     test_loss, test_acc, test_pred = loss_and_accuracy_on(net, criterion, test_loader, return_results=True,
                                                           device=device)
     print "\nLoss on test is {}, and accuracy is {}%".format(test_loss, test_acc * 100)
-    print confusion_matrix(test_set.test_labels, test_pred, labels=range(10))
+    cm = confusion_matrix(test_set.test_labels, test_pred, labels=range(10))
 
     # write to test.pred or a verion of it
     # write_test_pred(net, "transfer_")
@@ -263,9 +282,18 @@ def run_transfer():
 
     plot_graph(dev_loss, train_loss)
 
+    print "\n Conf Matrix"
+    print np.array(cm)
+
 
 def plot_confusion_matrix(cm, title):
-    plt.figure()
+    """
+    Plots the confusion matrix
+    :param cm: Confusion Matrix - can be a list of lists or numpy matrix
+    :param title: Title of figure
+    :return: None
+    """
+    f = plt.figure()
     plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
     plt.title(title)
     plt.colorbar()
@@ -285,9 +313,9 @@ def plot_confusion_matrix(cm, title):
     plt.ylabel('True label')
     plt.xlabel('Predicted label')
     plt.show()
-    plt.savefig("cm.png")
+    f.savefig("cm.png")
 
 
 if __name__ == '__main__':
-    run_my_cnn(use_batch_norm=True)
-#     run_transfer()
+    run_my_cnn(use_batch_norm=True, use_dropout=True)
+    run_transfer()
